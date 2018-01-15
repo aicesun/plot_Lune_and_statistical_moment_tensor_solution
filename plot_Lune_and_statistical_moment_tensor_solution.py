@@ -4,6 +4,13 @@
 
 # Script Description:
 # Script to take unconstrained moment tensor inversion result (from MTFIT) and plot Lune with fitted gaussian and associated statistical unconstrained MT inversion plot.
+# What the script does:
+# For each event:
+# 1. Takes specified sample of solutions (highest probability specificed fraction of MT solutions)
+# 2. Plots Lune for these data
+# 3. Fits 2D gaussian to Lune plot, extracting a peak location and a contour (representing the half width maximum, standard devation or similar)
+# 4. Takes the peak location from the gaussian and plots a random sample of solutions from that.
+# 5. Outputs MT beachball style plot with the potential solutions on, along with the radiation pattern for the most likely solution from the entire MT inversion for the event.
 
 # Input variables:
 # MT_inversion_result_mat_file_path - Path to full unconstrained moment tensor inversion result
@@ -25,6 +32,8 @@ import obspy
 import scipy.io as sio # For importing .mat MT solution data
 import scipy.optimize as opt # For curve fitting
 import math # For plotting contours as line
+import os,sys
+import random
 from matplotlib import path # For getting circle bounding path for MT plotting
 from obspy.imaging.scripts.mopad import MomentTensor, BeachBall # For getting nodal planes for unconstrained moment tensors
 from obspy.core.event.source import farfield # For calculating MT radiation patterns
@@ -337,7 +346,11 @@ def plot_sampled_MT_solns_on_Lune_with_gaussian_fit(MTs, MTp, frac_to_sample=0.1
     pts = []
     for i in range(len(contour_delta_values)):
         pts.append([contour_delta_values[i], contour_gamma_values[i]])
-    origin = pts[0]
+    try:
+        origin = pts[0]
+    except:
+        print "Not enough points associated with contour therefore increase value of plus_minus_range variable in function plot_sampled_MT_solns_on_Lune_with_gaussian_fit()"
+        sys.exit()
     refvec = [0, 1]
     # Define function for plotting contour:
     def clockwiseangle_and_distance(point):
@@ -467,12 +480,15 @@ def plot_sampled_MT_solns_on_Lune_with_gaussian_fit(MTs, MTp, frac_to_sample=0.1
     max_bin_delta_gamma_values = [bin_value_labels_delta[max_bin_delta_gamma_indices[0][0]], bin_value_labels_gamma[max_bin_delta_gamma_indices[1][0]]]
     delta = max_bin_delta_gamma_values[0]
     gamma = max_bin_delta_gamma_values[1]
-    MTs_max_gau_loc = gamma_delta_binned_MT_store["delta="+str(delta)]["gamma="+str(gamma)]["MTs"] # MT solutions associated with gaussian maximum (note: may be different to maximum value due to max value being fit rather than real value)
-    
+    try:
+        MTs_max_gau_loc = gamma_delta_binned_MT_store["delta="+str(delta)]["gamma="+str(gamma)]["MTs"] # MT solutions associated with gaussian maximum (note: may be different to maximum value due to max value being fit rather than real value)
+    except KeyError:
+        print "Insufficient sample of MTs to produce a solution. Try again with greater fraction."
+        sys.exit()
     return MTs_max_gau_loc
 
 
-def plot_MTs_on_sphere_twoD(MTs_to_plot, radiation_pattern_MT=[], stations=[], radiation_MT_phase = "P", lower_upper_hemi_switch="lower", figure_filename=[]):
+def plot_MTs_on_sphere_twoD(MTs_to_plot, radiation_pattern_MT=[], stations=[], radiation_MT_phase = "P", lower_upper_hemi_switch="lower", figure_filename=[], num_MT_solutions_to_plot=20):
     """Function to plot MT solutions on sphere, then project into 2D using an equal area projection.
     Input MTs are np array of NED MTs in shape [6,n] where n is number of solutions. Also takes optional radiation_pattern_MT, which it will plot a radiation pattern for.
     Note: x and y coordinates switched for plotting to take from NE to EN
@@ -562,8 +578,14 @@ def plot_MTs_on_sphere_twoD(MTs_to_plot, radiation_pattern_MT=[], stations=[], r
         # Last point:
         #Circle([0.,0.], facecolor=matplotlib.cm.jet(int(disp_magn[0]*256)), alpha=0.6) # First point
     
+    # Plot MT nodal plane solutions:
+    # Get sample to plot:
+    if len(MTs_to_plot[0,:]) > num_MT_solutions_to_plot:
+        sample_indices = random.sample(range(len(MTs_to_plot[0,:])),num_MT_solutions_to_plot) # Get random sample of MT solutions to plot
+    else:
+        sample_indices = range(len(MTs_to_plot[0,:]))
     # Loop over MT solutions, plotting nodal planes:
-    for i in range(len(MTs_to_plot[0,:])):
+    for i in sample_indices:
         # Get current mt:
         ned_mt = MTs_to_plot[:,i]
         
@@ -584,14 +606,18 @@ def plot_MTs_on_sphere_twoD(MTs_to_plot, radiation_pattern_MT=[], stations=[], r
             path_coords_plane_1.append((X1[j],Y1[j]))
         for j in range(len(X2)):
             path_coords_plane_2.append((X2[j],Y2[j]))
-        path_coords_plane_1_within_bounding_circle = np.vstack([p for p in path_coords_plane_1 if bounding_circle_path.contains_point(p, radius=0)])
-        path_coords_plane_2_within_bounding_circle = np.vstack([p for p in path_coords_plane_2 if bounding_circle_path.contains_point(p, radius=0)])
-        path_coords_plane_1_within_bounding_circle = np.vstack((path_coords_plane_1_within_bounding_circle, path_coords_plane_1_within_bounding_circle[0,:])) # To make no gaps
-        path_coords_plane_2_within_bounding_circle = np.vstack((path_coords_plane_2_within_bounding_circle, path_coords_plane_2_within_bounding_circle[0,:])) # To make no gaps
-        X1_within_bounding_circle = path_coords_plane_1_within_bounding_circle[:,0]
-        Y1_within_bounding_circle = path_coords_plane_1_within_bounding_circle[:,1]
-        X2_within_bounding_circle = path_coords_plane_2_within_bounding_circle[:,0]
-        Y2_within_bounding_circle = path_coords_plane_2_within_bounding_circle[:,1]
+        try:
+            path_coords_plane_1_within_bounding_circle = np.vstack([p for p in path_coords_plane_1 if bounding_circle_path.contains_point(p, radius=0)])
+            path_coords_plane_2_within_bounding_circle = np.vstack([p for p in path_coords_plane_2 if bounding_circle_path.contains_point(p, radius=0)])
+            path_coords_plane_1_within_bounding_circle = np.vstack((path_coords_plane_1_within_bounding_circle, path_coords_plane_1_within_bounding_circle[0,:])) # To make no gaps
+            path_coords_plane_2_within_bounding_circle = np.vstack((path_coords_plane_2_within_bounding_circle, path_coords_plane_2_within_bounding_circle[0,:])) # To make no gaps
+            X1_within_bounding_circle = path_coords_plane_1_within_bounding_circle[:,0]
+            Y1_within_bounding_circle = path_coords_plane_1_within_bounding_circle[:,1]
+            X2_within_bounding_circle = path_coords_plane_2_within_bounding_circle[:,0]
+            Y2_within_bounding_circle = path_coords_plane_2_within_bounding_circle[:,1]
+        except ValueError:
+            print "(Skipping nodal plane solution",i,"as can't plot.)"
+            continue
         
         # And plot 2D nodal planes:
         alpha_nodal_planes = 0.3
@@ -660,14 +686,16 @@ if __name__ == "__main__":
     
     # Loop over MT event files:
     for MT_data_filename in MT_data_filenames:
-    
+        
+        print "Processing data for:", MT_data_filename
+        
         # Import MT data:
         #MT_data_filename = "MT_data/20140629184210363MT.mat"
         uid, MTp, MTs, stations = load_MT_dict_from_file(MT_data_filename)
 
         # Find and plot sample of MTs data on Lune and return MT data from fitted gaussian:
         figure_filename = "Plots_out/"+MT_data_filename.split("/")[1].split(".")[0]+"_Lune.png"
-        MTs_max_gau_loc = plot_sampled_MT_solns_on_Lune_with_gaussian_fit(MTs, MTp, frac_to_sample=0.01, figure_filename=figure_filename) #frac_to_sample=0.1
+        MTs_max_gau_loc = plot_sampled_MT_solns_on_Lune_with_gaussian_fit(MTs, MTp, frac_to_sample=0.1, figure_filename=figure_filename) #frac_to_sample=0.1
 
         # Get most likely solution:
         index_MT_max_prob = np.argmax(MTp) # Index of most likely MT solution
@@ -683,7 +711,7 @@ if __name__ == "__main__":
         MTs_to_plot = MTs_max_gau_loc#[:,0:15]
         radiation_pattern_MT = MT_max_prob # 6 moment tensor to plot radiation pattern for
         figure_filename = "Plots_out/"+MT_data_filename.split("/")[1].split(".")[0]+".png"
-        plot_MTs_on_sphere_twoD(MTs_to_plot, radiation_pattern_MT=radiation_pattern_MT, stations=stations, radiation_MT_phase = "P", lower_upper_hemi_switch="lower", figure_filename=figure_filename)
+        plot_MTs_on_sphere_twoD(MTs_to_plot, radiation_pattern_MT=radiation_pattern_MT, stations=stations, radiation_MT_phase = "P", lower_upper_hemi_switch="lower", figure_filename=figure_filename, num_MT_solutions_to_plot=20)
 
         print "Finished processing data for:", MT_data_filename
     
