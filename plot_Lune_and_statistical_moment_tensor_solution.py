@@ -75,14 +75,15 @@ def get_full_MT_array(mt):
     
 
 def get_frac_of_MTs_using_MT_probs(MTs, MTp, frac_to_sample):
-    """Function to return fraction of MTs based on highet probabilities."""
+    """Function to return fraction of MTs based on highet probabilities. Also returns associated probabilities."""
     num_events_to_sample = int(len(MTp)*frac_to_sample) # Take top 1 % of samples
     sorted_indices = np.argsort(MTp)[::-1] # reorder into descending order
     # Find indices of solutions in sample:
     sample_indices = sorted_indices[0:num_events_to_sample]
     MTs_sample = MTs[:,sample_indices]
+    MTp_sample = MTp[sample_indices]
     print "Sampled",len(MTs_sample[0,:]),"out of",len(MTs[0,:]),"events"
-    return MTs_sample
+    return MTs_sample, MTp_sample
     
 
 def find_delta_gamm_values_from_sixMT(sixMT):
@@ -172,62 +173,13 @@ def fit_twoD_Gaussian(x, y, data, initial_guess_switch=False, initial_guess=(1,1
     return data_fitted
     
 
-def get_binned_MT_solutions_by_delta_gamma_dict(MTs, return_all_switch=False):
-    """Function to get binned MT solutions by delta and gamma value. Input is array of MTs (in (6,n) shape).
-    Output is binned dictionary containing bin values of delta and gamma and all MT solutions that are in the bin."""
-    
-    # Set up store for binned MT data:
-    gamma_delta_binned_MT_store = {} # Will have the entries: gamma_delta_binned_MT_store[delta][gamma][array of MTs (shape(6,n))]
-
-    # Setup delta-gamma bins for data:
-    bin_size_delta = np.pi/120. #np.pi/60.
-    bin_size_gamma = np.pi/120. #np.pi/60.
-    bin_value_labels_delta = np.arange(-np.pi/2,np.pi/2+bin_size_delta, bin_size_delta)
-    bin_value_labels_gamma = np.arange(-np.pi/6,np.pi/6+bin_size_gamma, bin_size_gamma)
-    bins_delta_gamma = np.zeros((len(bin_value_labels_delta), len(bin_value_labels_gamma)), dtype=float) # array to store bin values (although can also obtain from dictionary sizes)
-    
-    # And setup dict for all binned values:
-    for delta in bin_value_labels_delta:
-        for gamma in bin_value_labels_gamma:
-            try:
-                gamma_delta_binned_MT_store["delta="+str(delta)]["gamma="+str(gamma)] = {}
-            except KeyError:
-                gamma_delta_binned_MT_store["delta="+str(delta)] = {}
-                gamma_delta_binned_MT_store["delta="+str(delta)]["gamma="+str(gamma)] = {}
-    
-    # Loop over events (binning each data point):
-    for a in range(len(MTs[0,:])):
-        # Get delta and gamma values for sixMT:
-        MT_current = MTs[:,a]
-        delta, gamma = find_delta_gamm_values_from_sixMT(MT_current)
-
-        # And bin solution into approriate bin:
-        idx_delta = (np.abs(bin_value_labels_delta-delta)).argmin()
-        idx_gamma = (np.abs(bin_value_labels_gamma-gamma)).argmin()
-        bins_delta_gamma[idx_delta,idx_gamma] += 1. # Append 1 to bin
-        
-        # And add to dictionary:
-        delta_bin_label_tmp = bin_value_labels_delta[idx_delta]
-        gamma_bin_label_tmp = bin_value_labels_gamma[idx_gamma]
-        try:
-            tmp_MT_stacked_array = gamma_delta_binned_MT_store["delta="+str(delta_bin_label_tmp)]["gamma="+str(gamma_bin_label_tmp)]["MTs"]
-            gamma_delta_binned_MT_store["delta="+str(delta_bin_label_tmp)]["gamma="+str(gamma_bin_label_tmp)]["MTs"] = np.hstack((tmp_MT_stacked_array, MT_current.reshape(6,1)))
-        except KeyError:
-            gamma_delta_binned_MT_store["delta="+str(delta_bin_label_tmp)]["gamma="+str(gamma_bin_label_tmp)]["MTs"] = np.array(MT_current.reshape(6,1)) # If doesnt exist, create new MT store entry
-    
-    if return_all_switch:
-        return gamma_delta_binned_MT_store, bin_value_labels_delta, bin_value_labels_gamma, bins_delta_gamma
-    else:
-        return gamma_delta_binned_MT_store
-    
-
 # Get MT solutions binned and stored for all gamma and delta values:
-def get_binned_MT_solutions_by_delta_gamma_dict(MTs, return_all_switch=False):
-    """Function to get binned MT solutions by delta and gamma value. Input is array of MTs (in (6,n) shape).
+def get_binned_MT_solutions_by_delta_gamma_dict(MTs, MTp, return_all_switch=False):
+    """Function to get binned MT solutions by delta and gamma value. Input is array of MTs (in (6,n) shape) and array of associated probabilities (MTp, length n).
     Output is binned dictionary containing bin values of delta and gamma and all MT solutions that are in the bin."""
     
     # Set up store for binned MT data:
-    gamma_delta_binned_MT_store = {} # Will have the entries: gamma_delta_binned_MT_store[delta][gamma][array of MTs (shape(6,n))]
+    gamma_delta_binned_MT_store = {} # Will have the entries: gamma_delta_binned_MT_store[delta][gamma]: [MTs(shape(6,n))] and [MTp (shape n)]
 
     # Setup delta-gamma bins for data:
     bin_size_delta = np.pi/120. #np.pi/60.
@@ -235,6 +187,7 @@ def get_binned_MT_solutions_by_delta_gamma_dict(MTs, return_all_switch=False):
     bin_value_labels_delta = np.arange(-np.pi/2,np.pi/2+bin_size_delta, bin_size_delta)
     bin_value_labels_gamma = np.arange(-np.pi/6,np.pi/6+bin_size_gamma, bin_size_gamma)
     bins_delta_gamma = np.zeros((len(bin_value_labels_delta), len(bin_value_labels_gamma)), dtype=float) # array to store bin values (although can also obtain from dictionary sizes)
+    bins_delta_gamma_probability_array = np.zeros((len(bin_value_labels_delta), len(bin_value_labels_gamma)), dtype=float) # array to store probability associated with each bin (although can also obtain from dictionary sizes)
     
     # And setup dict for all binned values:
     for delta in bin_value_labels_delta:
@@ -249,24 +202,29 @@ def get_binned_MT_solutions_by_delta_gamma_dict(MTs, return_all_switch=False):
     for a in range(len(MTs[0,:])):
         # Get delta and gamma values for sixMT:
         MT_current = MTs[:,a]
+        MTp_current = MTp[a]
         delta, gamma = find_delta_gamm_values_from_sixMT(MT_current)
 
         # And bin solution into approriate bin:
         idx_delta = (np.abs(bin_value_labels_delta-delta)).argmin()
         idx_gamma = (np.abs(bin_value_labels_gamma-gamma)).argmin()
         bins_delta_gamma[idx_delta,idx_gamma] += 1. # Append 1 to bin
+        bins_delta_gamma_probability_array[idx_delta,idx_gamma] += MTp_current # Sum probability for given bin
         
         # And add to dictionary:
         delta_bin_label_tmp = bin_value_labels_delta[idx_delta]
         gamma_bin_label_tmp = bin_value_labels_gamma[idx_gamma]
         try:
             tmp_MT_stacked_array = gamma_delta_binned_MT_store["delta="+str(delta_bin_label_tmp)]["gamma="+str(gamma_bin_label_tmp)]["MTs"]
+            tmp_MTp_array = gamma_delta_binned_MT_store["delta="+str(delta_bin_label_tmp)]["gamma="+str(gamma_bin_label_tmp)]["MTp"]
             gamma_delta_binned_MT_store["delta="+str(delta_bin_label_tmp)]["gamma="+str(gamma_bin_label_tmp)]["MTs"] = np.hstack((tmp_MT_stacked_array, MT_current.reshape(6,1)))
+            gamma_delta_binned_MT_store["delta="+str(delta_bin_label_tmp)]["gamma="+str(gamma_bin_label_tmp)]["MTp"] = np.hstack((tmp_MTp_array, np.array([MTp_current])))
         except KeyError:
             gamma_delta_binned_MT_store["delta="+str(delta_bin_label_tmp)]["gamma="+str(gamma_bin_label_tmp)]["MTs"] = np.array(MT_current.reshape(6,1)) # If doesnt exist, create new MT store entry
+            gamma_delta_binned_MT_store["delta="+str(delta_bin_label_tmp)]["gamma="+str(gamma_bin_label_tmp)]["MTp"] = np.array([MTp_current]) # If doesnt exist, create new MTp store entry
     
     if return_all_switch:
-        return gamma_delta_binned_MT_store, bin_value_labels_delta, bin_value_labels_gamma, bins_delta_gamma
+        return gamma_delta_binned_MT_store, bin_value_labels_delta, bin_value_labels_gamma, bins_delta_gamma, bins_delta_gamma_probability_array
     else:
         return gamma_delta_binned_MT_store
 
@@ -306,14 +264,18 @@ def plot_sampled_MT_solns_on_Lune_with_gaussian_fit(MTs, MTp, frac_to_sample=0.1
     """Function to plot sampled MT solutions on Lune, binned. Will also fit gaussian to this and return the maximum location of the gaussian and the contour coordinates. Also outputs saved figure."""
     
     # Get sample of MT solutions for fitting Gaussian to:
-    MTs_sample = get_frac_of_MTs_using_MT_probs(MTs, MTp, frac_to_sample)
+    MTs_sample, MTp_sample = get_frac_of_MTs_using_MT_probs(MTs, MTp, frac_to_sample)
     
-    # Get bin values for delta-gamma space (for plotting Lune):
-    gamma_delta_binned_MT_store, bin_value_labels_delta, bin_value_labels_gamma, bins_delta_gamma = get_binned_MT_solutions_by_delta_gamma_dict(MTs_sample, return_all_switch=True)
+    # Get bin values and bin probability values for delta-gamma space (for plotting Lune):
+    gamma_delta_binned_MT_store, bin_value_labels_delta, bin_value_labels_gamma, bins_delta_gamma, bins_delta_gamma_probability_array = get_binned_MT_solutions_by_delta_gamma_dict(MTs_sample, MTp_sample, return_all_switch=True)
 
     # Fit 2D gaussian to delta-gamma Lune data:
+    use_bin_values_vs_prob_values_switch = "prob" # "bin"
     # Define initial guess params:
-    amplitude = np.max(bins_delta_gamma)
+    if use_bin_values_vs_prob_values_switch == "bin":
+        amplitude = np.max(bins_delta_gamma)
+    elif use_bin_values_vs_prob_values_switch == "prob":
+        amplitude = np.max(bins_delta_gamma_probability_array)
     xo = 0.0
     yo = 0.0
     sigma_x = np.pi/6.
@@ -321,7 +283,12 @@ def plot_sampled_MT_solns_on_Lune_with_gaussian_fit(MTs, MTp, frac_to_sample=0.1
     theta = np.pi/2.
     initial_guess=(amplitude, xo, yo, sigma_x, sigma_y, theta) # Define initial guess values from data
     # And fit gaussian:
-    bins_delta_gamma_gau_fitted = fit_twoD_Gaussian(bin_value_labels_delta, bin_value_labels_gamma, bins_delta_gamma, initial_guess_switch=True, initial_guess=initial_guess)
+    if use_bin_values_vs_prob_values_switch == "bin":
+        bins_delta_gamma_gau_fitted = fit_twoD_Gaussian(bin_value_labels_delta, bin_value_labels_gamma, bins_delta_gamma, initial_guess_switch=True, initial_guess=initial_guess)
+        print "Lune plot setting: binned number of solutions per delta,gamma"
+    elif use_bin_values_vs_prob_values_switch == "prob":
+        bins_delta_gamma_gau_fitted = fit_twoD_Gaussian(bin_value_labels_delta, bin_value_labels_gamma, bins_delta_gamma_probability_array, initial_guess_switch=True, initial_guess=initial_guess)
+        print "Lune plot setting: cummulative probability"
     
     # Get location of maximum of Gaussian fit and 1 stdev contour:
     # Get location of maximum:
@@ -474,7 +441,7 @@ def plot_sampled_MT_solns_on_Lune_with_gaussian_fit(MTs, MTp, frac_to_sample=0.1
     # And return MT data at maximum (and mts within contour?!):
     print "And getting MT data at maximum of gaussian to return (and mts within contour?!)"
     # Get all solutions associated with bins inside contour on Lune plot:
-    gamma_delta_binned_MT_store = get_binned_MT_solutions_by_delta_gamma_dict(MTs_sample) # Returns dictionary of all MTs binned by gamma, delta value
+    gamma_delta_binned_MT_store = get_binned_MT_solutions_by_delta_gamma_dict(MTs_sample, MTp_sample) # Returns dictionary of all MTs binned by gamma, delta value
     # And get all values associated with gaussian maximum on Lune plot:
     max_bin_delta_gamma_indices = np.where(bins_delta_gamma_gau_fitted==np.max(bins_delta_gamma_gau_fitted))
     max_bin_delta_gamma_values = [bin_value_labels_delta[max_bin_delta_gamma_indices[0][0]], bin_value_labels_gamma[max_bin_delta_gamma_indices[1][0]]]
