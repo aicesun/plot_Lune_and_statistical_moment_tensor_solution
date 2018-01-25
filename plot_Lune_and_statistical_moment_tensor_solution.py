@@ -38,6 +38,7 @@ from matplotlib import path # For getting circle bounding path for MT plotting
 from obspy.imaging.scripts.mopad import MomentTensor, BeachBall # For getting nodal planes for unconstrained moment tensors
 from obspy.core.event.source import farfield # For calculating MT radiation patterns
 from matplotlib.patches import Polygon, Circle # For plotting MT radiation patterns
+import matplotlib.patches as mpatches # For adding patches for creating legends etc
 from matplotlib.collections import PatchCollection # For plotting MT radiation patterns
 import glob
 
@@ -254,6 +255,146 @@ def Lambert_azimuthal_equal_area_projection_conv_XY_plane_for_MTs(x,y,z):
     Y = y * np.sqrt(2/(1+z))
     return X,Y
 
+# Various plotting functions:  
+def create_and_plot_bounding_circle_and_path(ax):
+    """Function to create and plot bounding circle for plotting MT solution. 
+    Inputs are ax to plot on. Outputs are ax and bounding_circle_path (defining area contained by bounding circle)."""
+    # Setup bounding circle:
+    theta = np.ones(200)*np.pi/2
+    phi = np.linspace(0.,2*np.pi,len(theta))
+    r = np.ones(len(theta))
+    x,y,z = convert_spherical_coords_to_cartesian_coords(r,theta,phi)
+    X_bounding_circle,Y_bounding_circle = Lambert_azimuthal_equal_area_projection_conv_XY_plane_for_MTs(x,y,z)
+    ax.plot(Y_bounding_circle,X_bounding_circle, c="k")
+
+    # And create bounding path from circle:
+    path_coords = [] # list to store path coords
+    for i in range(len(X_bounding_circle)):
+        x_tmp = X_bounding_circle[i]
+        y_tmp = Y_bounding_circle[i]
+        path_coords.append((x_tmp,y_tmp))
+    bounding_circle_path = path.Path(path_coords) # bounding path that can be used to find points
+    #bounding_circle_path.contains_points([(.5, .5)])
+    
+    return ax, bounding_circle_path
+
+def plot_radiation_pattern_for_given_NED_sixMT(ax, radiation_pattern_MT, bounding_circle_path, lower_upper_hemi_switch="lower", radiation_MT_phase="P"):
+    """Function to plot radiation pattern on axis ax, given 6 MT describing MT to plot radiation pattern for and other args.
+    Outputs axis ax with radiation pattern plotted."""
+    # Get MT to plot radiation pattern for:
+    ned_mt = radiation_pattern_MT
+
+    # Get spherical points to sample for radiation pattern:
+    theta = np.linspace(0,np.pi,100)
+    phi = np.linspace(0.,2*np.pi,len(theta))
+    r = np.ones(len(theta))
+    THETA,PHI = np.meshgrid(theta, phi)
+    theta_flattened = THETA.flatten()
+    phi_flattened = PHI.flatten()
+    r_flattened = np.ones(len(theta_flattened))
+    x,y,z = convert_spherical_coords_to_cartesian_coords(r_flattened,theta_flattened,phi_flattened)
+    if lower_upper_hemi_switch=="upper":
+        z = -1*z
+    radiation_field_sample_pts = np.vstack((x,y,z))
+    # get radiation pattern using farfield fcn:
+    if radiation_MT_phase=="P":
+        disp = farfield(ned_mt, radiation_field_sample_pts, type="P") # Gets radiation displacement vector
+        disp_magn = np.sum(disp * radiation_field_sample_pts, axis=0) # Magnitude of displacement (alligned with radius)  ???np.sqrt???
+    elif radiation_MT_phase=="S":
+        disp = farfield(ned_mt, radiation_field_sample_pts, type="S") # Gets radiation displacement vector
+        disp_magn = np.sqrt(np.sum(disp * disp, axis=0)) # Magnitude of displacement (perpendicular to radius)
+    disp_magn /= np.max(np.abs(disp_magn)) # Normalised magnitude of displacemnet
+
+    # And convert radiation pattern to 2D coords:
+    X_radiaton_coords,Y_radiaton_coords = Lambert_azimuthal_equal_area_projection_conv_XY_plane_for_MTs(radiation_field_sample_pts[0],radiation_field_sample_pts[1],radiation_field_sample_pts[2])
+
+    # Create 2D XY radial mesh coords (for plotting) and plot radiation pattern:
+    theta_spacing = theta[1]-theta[0]
+    phi_spacing = phi[1]-phi[0]
+    patches = []
+    # Plot majority of radiation points as polygons:
+    for b in range(len(disp_magn)):
+        # Get coords at half spacing around point:
+        theta_tmp = np.array([theta_flattened[b]-(theta_spacing/2.), theta_flattened[b]+(theta_spacing/2.)])
+        phi_tmp = np.array([phi_flattened[b]-(phi_spacing/2.), phi_flattened[b]+(phi_spacing/2.)])
+        # And check that doesn't go outside boundaries:
+        if theta_flattened[b] == 0. or theta_flattened[b] == np.pi:
+            continue # ignore as outside boundaries
+        if phi_flattened[b] == 0.:# or phi_flattened[b] == 2*np.pi:
+            continue # ignore as outside boundaries
+        THETA_tmp, PHI_tmp = np.meshgrid(theta_tmp, phi_tmp)
+        R_tmp = np.ones(4,dtype=float)
+        x,y,z = convert_spherical_coords_to_cartesian_coords(R_tmp,THETA_tmp.flatten(),PHI_tmp.flatten())
+        X, Y = Lambert_azimuthal_equal_area_projection_conv_XY_plane_for_MTs(x,y,z)
+        # And plot (but ONLY if within bounding circle):
+        if bounding_circle_path.contains_point((X[0],Y[0]), radius=0):
+            poly_corner_coords = [(Y[0],X[0]), (Y[2],X[2]), (Y[3],X[3]), (Y[1],X[1])]
+            polygon_curr = Polygon(poly_corner_coords, closed=True, facecolor=matplotlib.cm.jet(int(disp_magn[b]*256)), alpha=0.6)
+            ax.add_patch(polygon_curr)
+    # Plot final point (theta,phi=0,0) (beginning point):
+    centre_area = Circle([0.,0.], radius=theta_spacing/2., facecolor=matplotlib.cm.jet(int(disp_magn[0]*256)), alpha=0.6)
+    ax.add_patch(centre_area)
+    
+    return ax
+
+def plot_nodal_planes_for_given_NED_sixMT(ax, MT_for_nodal_planes, bounding_circle_path, lower_upper_hemi_switch="lower", alpha_nodal_planes=0.3):
+    """Function for plotting nodal planes on axis ax, for given 6MT in NED format for nodal planes."""
+
+    ned_mt = MT_for_nodal_planes
+
+    # Get 3D nodal planes:
+    plane_1_3D, plane_2_3D = get_nodal_plane_xyz_coords(ned_mt)
+    # And switch vertical if neccessary:
+    if lower_upper_hemi_switch=="upper":
+        plane_1_3D[2,:] = -1*plane_1_3D[2,:] # as positive z is down, therefore down gives spherical projection
+        plane_2_3D[2,:] = -1*plane_2_3D[2,:] # as positive z is down, therefore down gives spherical projection
+    # And convert to 2D:
+    X1,Y1 = Lambert_azimuthal_equal_area_projection_conv_XY_plane_for_MTs(plane_1_3D[0],plane_1_3D[1],plane_1_3D[2])
+    X2,Y2 = Lambert_azimuthal_equal_area_projection_conv_XY_plane_for_MTs(plane_2_3D[0],plane_2_3D[1],plane_2_3D[2])
+
+    # Get only data points within bounding circle:
+    path_coords_plane_1 = [] # list to store path coords
+    path_coords_plane_2 = [] # list to store path coords
+    for j in range(len(X1)):
+        path_coords_plane_1.append((X1[j],Y1[j]))
+    for j in range(len(X2)):
+        path_coords_plane_2.append((X2[j],Y2[j]))
+    stop_plotting_switch = False # If true, would stop plotting on current axis (as can't)
+    try:
+        path_coords_plane_1_within_bounding_circle = np.vstack([p for p in path_coords_plane_1 if bounding_circle_path.contains_point(p, radius=0)])
+        path_coords_plane_2_within_bounding_circle = np.vstack([p for p in path_coords_plane_2 if bounding_circle_path.contains_point(p, radius=0)])
+        path_coords_plane_1_within_bounding_circle = np.vstack((path_coords_plane_1_within_bounding_circle, path_coords_plane_1_within_bounding_circle[0,:])) # To make no gaps
+        path_coords_plane_2_within_bounding_circle = np.vstack((path_coords_plane_2_within_bounding_circle, path_coords_plane_2_within_bounding_circle[0,:])) # To make no gaps
+        X1_within_bounding_circle = path_coords_plane_1_within_bounding_circle[:,0]
+        Y1_within_bounding_circle = path_coords_plane_1_within_bounding_circle[:,1]
+        X2_within_bounding_circle = path_coords_plane_2_within_bounding_circle[:,0]
+        Y2_within_bounding_circle = path_coords_plane_2_within_bounding_circle[:,1]
+    except ValueError:
+        print "(Skipping current nodal plane solution as can't plot.)"
+        stop_plotting_switch = True # Stops rest of script plotting on current axis
+
+    # And plot 2D nodal planes:
+    if not stop_plotting_switch:
+        # Plot plane 1:
+        for a in range(len(X1_within_bounding_circle)-1):
+            if np.abs(Y1_within_bounding_circle[a]-Y1_within_bounding_circle[a+1])<0.25 and np.abs(X1_within_bounding_circle[a]-X1_within_bounding_circle[a+1])<0.25:
+                ax.plot([Y1_within_bounding_circle[a], Y1_within_bounding_circle[a+1]],[X1_within_bounding_circle[a], X1_within_bounding_circle[a+1]], color="k", alpha=alpha_nodal_planes, marker="None")
+            else:
+                continue # And don't plot line between bounding circle intersections
+        # And plot plane 2:
+        for a in range(len(X2_within_bounding_circle)-1):
+            if np.abs(Y2_within_bounding_circle[a]-Y2_within_bounding_circle[a+1])<0.25 and np.abs(X2_within_bounding_circle[a]-X2_within_bounding_circle[a+1])<0.25:
+                ax.plot([Y2_within_bounding_circle[a], Y2_within_bounding_circle[a+1]],[X2_within_bounding_circle[a], X2_within_bounding_circle[a+1]], color="k", alpha=alpha_nodal_planes, marker="None")
+            else:
+                continue # And don't plot line between bounding circle intersections
+    
+    return ax
+
+
+def find_nearest(array,value):
+    idx = (np.abs(array-value)).argmin()
+    return array[idx], idx
+
 
 # ------------------- End of defining generally useful functions -------------------
 
@@ -469,82 +610,15 @@ def plot_MTs_on_sphere_twoD(MTs_to_plot, radiation_pattern_MT=[], stations=[], r
     # Setup figure:
     fig = plt.figure(figsize=(6,6))
     ax = fig.add_subplot(111) #projection="3d")
-    
-    # Setup bounding circle:
-    theta = np.ones(200)*np.pi/2
-    phi = np.linspace(0.,2*np.pi,len(theta))
-    r = np.ones(len(theta))
-    x,y,z = convert_spherical_coords_to_cartesian_coords(r,theta,phi)
-    X_bounding_circle,Y_bounding_circle = Lambert_azimuthal_equal_area_projection_conv_XY_plane_for_MTs(x,y,z)
-    ax.plot(Y_bounding_circle,X_bounding_circle)
-    
-    # And create bounding path from circle:
-    path_coords = [] # list to store path coords
-    for i in range(len(X_bounding_circle)):
-        x_tmp = X_bounding_circle[i]
-        y_tmp = Y_bounding_circle[i]
-        path_coords.append((x_tmp,y_tmp))
-    bounding_circle_path = path.Path(path_coords) # bounding path that can be used to find points
-    #bounding_circle_path.contains_points([(.5, .5)])
+        
+    # Setup bounding circle and create bounding path from circle:
+    ax, bounding_circle_path = create_and_plot_bounding_circle_and_path(ax)
     
     # Plot radiation pattern if provided with radiation pattern MT to plot:
     if not len(radiation_pattern_MT)==0:
-        # Get MT to plot radiation pattern for:
-        ned_mt = radiation_pattern_MT
+        ax = plot_radiation_pattern_for_given_NED_sixMT(ax, radiation_pattern_MT, bounding_circle_path, lower_upper_hemi_switch, radiation_MT_phase) # Plots radiation pattern
+        
 
-        # Get spherical points to sample for radiation pattern:
-        theta = np.linspace(0,np.pi,100)
-        phi = np.linspace(0.,2*np.pi,len(theta))
-        r = np.ones(len(theta))
-        THETA,PHI = np.meshgrid(theta, phi)
-        theta_flattened = THETA.flatten()
-        phi_flattened = PHI.flatten()
-        r_flattened = np.ones(len(theta_flattened))
-        x,y,z = convert_spherical_coords_to_cartesian_coords(r_flattened,theta_flattened,phi_flattened)
-        if lower_upper_hemi_switch=="upper":
-            z = -1*z
-        radiation_field_sample_pts = np.vstack((x,y,z))
-        # get radiation pattern using farfield fcn:
-        if radiation_MT_phase=="P":
-            disp = farfield(ned_mt, radiation_field_sample_pts, type="P") # Gets radiation displacement vector
-            disp_magn = np.sum(disp * radiation_field_sample_pts, axis=0) # Magnitude of displacement (alligned with radius)  ???np.sqrt???
-        elif radiation_MT_phase=="S":
-            disp = farfield(ned_mt, radiation_field_sample_pts, type="S") # Gets radiation displacement vector
-            disp_magn = np.sqrt(np.sum(disp * disp, axis=0)) # Magnitude of displacement (perpendicular to radius)
-        disp_magn /= np.max(np.abs(disp_magn)) # Normalised magnitude of displacemnet
-
-        # And convert radiation pattern to 2D coords:
-        X_radiaton_coords,Y_radiaton_coords = Lambert_azimuthal_equal_area_projection_conv_XY_plane_for_MTs(radiation_field_sample_pts[0],radiation_field_sample_pts[1],radiation_field_sample_pts[2])
-
-        # Create 2D XY radial mesh coords (for plotting) and plot radiation pattern:
-        theta_spacing = theta[1]-theta[0]
-        phi_spacing = phi[1]-phi[0]
-        patches = []
-        # Plot majority of radiation points as polygons:
-        for b in range(len(disp_magn)):
-            # Get coords at half spacing around point:
-            theta_tmp = np.array([theta_flattened[b]-(theta_spacing/2.), theta_flattened[b]+(theta_spacing/2.)])
-            phi_tmp = np.array([phi_flattened[b]-(phi_spacing/2.), phi_flattened[b]+(phi_spacing/2.)])
-            # And check that doesn't go outside boundaries:
-            if theta_flattened[b] == 0. or theta_flattened[b] == np.pi:
-                continue # ignore as outside boundaries
-            if phi_flattened[b] == 0.:# or phi_flattened[b] == 2*np.pi:
-                continue # ignore as outside boundaries
-            THETA_tmp, PHI_tmp = np.meshgrid(theta_tmp, phi_tmp)
-            R_tmp = np.ones(4,dtype=float)
-            x,y,z = convert_spherical_coords_to_cartesian_coords(R_tmp,THETA_tmp.flatten(),PHI_tmp.flatten())
-            X, Y = Lambert_azimuthal_equal_area_projection_conv_XY_plane_for_MTs(x,y,z)
-            # And plot (but ONLY if within bounding circle):
-            if bounding_circle_path.contains_point((X[0],Y[0]), radius=0):
-                poly_corner_coords = [(Y[0],X[0]), (Y[2],X[2]), (Y[3],X[3]), (Y[1],X[1])]
-                polygon_curr = Polygon(poly_corner_coords, closed=True, facecolor=matplotlib.cm.jet(int(disp_magn[b]*256)), alpha=0.6)
-                ax.add_patch(polygon_curr)
-        # Plot final point (theta,phi=0,0) (beginning point):
-        centre_area = Circle([0.,0.], radius=theta_spacing/2., facecolor=matplotlib.cm.jet(int(disp_magn[0]*256)), alpha=0.6)
-        ax.add_patch(centre_area)
-        # Last point:
-        #Circle([0.,0.], facecolor=matplotlib.cm.jet(int(disp_magn[0]*256)), alpha=0.6) # First point
-    
     # Plot MT nodal plane solutions:
     # Get sample to plot:
     if len(MTs_to_plot[0,:]) > num_MT_solutions_to_plot:
@@ -554,53 +628,11 @@ def plot_MTs_on_sphere_twoD(MTs_to_plot, radiation_pattern_MT=[], stations=[], r
     # Loop over MT solutions, plotting nodal planes:
     for i in sample_indices:
         # Get current mt:
-        ned_mt = MTs_to_plot[:,i]
+        curr_MT_to_plot = MTs_to_plot[:,i]
+        # And try to plot current MT nodal planes:
+        print "Attempted to plot solution", i
+        ax = plot_nodal_planes_for_given_NED_sixMT(ax, curr_MT_to_plot, bounding_circle_path, lower_upper_hemi_switch, alpha_nodal_planes=0.3)
         
-        # Get 3D nodal planes:
-        plane_1_3D, plane_2_3D = get_nodal_plane_xyz_coords(ned_mt)
-        # And switch vertical if neccessary:
-        if lower_upper_hemi_switch=="upper":
-            plane_1_3D[2,:] = -1*plane_1_3D[2,:] # as positive z is down, therefore down gives spherical projection
-            plane_2_3D[2,:] = -1*plane_2_3D[2,:] # as positive z is down, therefore down gives spherical projection
-        # And convert to 2D:
-        X1,Y1 = Lambert_azimuthal_equal_area_projection_conv_XY_plane_for_MTs(plane_1_3D[0],plane_1_3D[1],plane_1_3D[2])
-        X2,Y2 = Lambert_azimuthal_equal_area_projection_conv_XY_plane_for_MTs(plane_2_3D[0],plane_2_3D[1],plane_2_3D[2])
-        
-        # Get only data points within bounding circle:
-        path_coords_plane_1 = [] # list to store path coords
-        path_coords_plane_2 = [] # list to store path coords
-        for j in range(len(X1)):
-            path_coords_plane_1.append((X1[j],Y1[j]))
-        for j in range(len(X2)):
-            path_coords_plane_2.append((X2[j],Y2[j]))
-        try:
-            path_coords_plane_1_within_bounding_circle = np.vstack([p for p in path_coords_plane_1 if bounding_circle_path.contains_point(p, radius=0)])
-            path_coords_plane_2_within_bounding_circle = np.vstack([p for p in path_coords_plane_2 if bounding_circle_path.contains_point(p, radius=0)])
-            path_coords_plane_1_within_bounding_circle = np.vstack((path_coords_plane_1_within_bounding_circle, path_coords_plane_1_within_bounding_circle[0,:])) # To make no gaps
-            path_coords_plane_2_within_bounding_circle = np.vstack((path_coords_plane_2_within_bounding_circle, path_coords_plane_2_within_bounding_circle[0,:])) # To make no gaps
-            X1_within_bounding_circle = path_coords_plane_1_within_bounding_circle[:,0]
-            Y1_within_bounding_circle = path_coords_plane_1_within_bounding_circle[:,1]
-            X2_within_bounding_circle = path_coords_plane_2_within_bounding_circle[:,0]
-            Y2_within_bounding_circle = path_coords_plane_2_within_bounding_circle[:,1]
-        except ValueError:
-            print "(Skipping nodal plane solution",i,"as can't plot.)"
-            continue
-        
-        # And plot 2D nodal planes:
-        alpha_nodal_planes = 0.3
-        # Plot plane 1:
-        for a in range(len(X1_within_bounding_circle)-1):
-            if np.abs(Y1_within_bounding_circle[a]-Y1_within_bounding_circle[a+1])<0.25 and np.abs(X1_within_bounding_circle[a]-X1_within_bounding_circle[a+1])<0.25:
-                ax.plot([Y1_within_bounding_circle[a], Y1_within_bounding_circle[a+1]],[X1_within_bounding_circle[a], X1_within_bounding_circle[a+1]], color="k", alpha=alpha_nodal_planes, marker="None")
-            else:
-                continue # And don't plot line between bounding circle intersections
-        # And plot plane 2:
-        for a in range(len(X2_within_bounding_circle)-1):
-            if np.abs(Y2_within_bounding_circle[a]-Y2_within_bounding_circle[a+1])<0.25 and np.abs(X2_within_bounding_circle[a]-X2_within_bounding_circle[a+1])<0.25:
-                ax.plot([Y2_within_bounding_circle[a], Y2_within_bounding_circle[a+1]],[X2_within_bounding_circle[a], X2_within_bounding_circle[a+1]], color="k", alpha=alpha_nodal_planes, marker="None")
-            else:
-                continue # And don't plot line between bounding circle intersections
-        print "Plotted solution", i
     
     # Plot stations (if provided):
     if not len(stations) == 0:
@@ -622,28 +654,161 @@ def plot_MTs_on_sphere_twoD(MTs_to_plot, radiation_pattern_MT=[], stations=[], r
             X, Y = Lambert_azimuthal_equal_area_projection_conv_XY_plane_for_MTs(x,y,z)
             # And plot based on polarity:
             if polarity == 1:
-                ax.scatter(Y,X,c="r",marker="^",s=30,alpha=1.0)
+                ax.scatter(Y,X,c="r",marker="^",s=30,alpha=1.0, zorder=100)
             elif polarity == -1:
-                ax.scatter(Y,X,c="b",marker="v",s=30,alpha=1.0)
+                ax.scatter(Y,X,c="b",marker="v",s=30,alpha=1.0, zorder=100)
             elif polarity == 0:
-                ax.scatter(Y,X,c="w",marker='o',s=30,alpha=1.0)
+                ax.scatter(Y,X,c="w",marker='o',s=30,alpha=1.0, zorder=100)
             # And plot station name:
-            plt.text(Y,X,station_name,color="k", fontsize=10, horizontalalignment="left", verticalalignment='top',alpha=1.0)
+            plt.text(Y,X,station_name,color="k", fontsize=10, horizontalalignment="left", verticalalignment='top',alpha=1.0, zorder=100)
             
     # Finish plotting:
     ax.set_xlabel("E")
     ax.set_ylabel("N")
     ax.set_xlim(-2.0,2.0)
     ax.set_ylim(-2.0,2.0)
-    plt.plot([-2.,2.],[0.,0.],c="k", alpha=0.5)
-    plt.plot([0.,0.],[-2.,2.],c="k", alpha=0.5)
+    #plt.plot([-2.,2.],[0.,0.],c="k", alpha=0.5)
+    #plt.plot([0.,0.],[-2.,2.],c="k", alpha=0.5)
     plt.axis('off')
     # And save figure if given figure filename:
     if not len(figure_filename) == 0:
         plt.savefig(figure_filename, dpi=600)
     else:
         plt.show()
+        
 
+def plot_takeoff_angles_MT_solution_from_file(station_takeoff_angles_variation_data_files_list, color_list_for_plotting, MT_for_nodal_planes=[], radiation_pattern_MT=[], lower_upper_hemi_switch="lower", figure_filename=[], plot_station_labels=False):
+    """Function to take takeoff angles from files list given and plot points associated with location on focal sphere plot. Will also plot radiation pattern nodal planes if given 6 MT for radiation pattern.
+    Note on station_takeoff_angles_variation_data_file format: station_name, phase, polarity, ray_takeoff_azimuth_deg_CW_from_N, ray_takeoff_dip_deg_up_from_vert_down"""
+    
+    # Setup figure:
+    fig = plt.figure(figsize=(12,6))
+    ax = fig.add_subplot(121)
+        
+    # Setup bounding circle and create bounding path from circle:
+    ax, bounding_circle_path = create_and_plot_bounding_circle_and_path(ax)
+    
+    # Plot radiation pattern if provided with radiation pattern MT to plot:
+    if not len(radiation_pattern_MT)==0:
+        ax = plot_radiation_pattern_for_given_NED_sixMT(ax, radiation_pattern_MT, bounding_circle_path, lower_upper_hemi_switch, radiation_MT_phase) # Plots radiation pattern
+    
+    # Plot MT nodal plane solution, if provided:
+    if not len(MT_for_nodal_planes)==0:
+        ax = plot_nodal_planes_for_given_NED_sixMT(ax, MT_for_nodal_planes, bounding_circle_path, lower_upper_hemi_switch, alpha_nodal_planes=1.0)
+    
+    # Loop over takeoff angle files within takeoff angle data files list:
+    legend_patches = []
+    for j in range(len(station_takeoff_angles_variation_data_files_list)):
+        # Get current takeoff angle file:
+        station_takeoff_angles_variation_data_file = station_takeoff_angles_variation_data_files_list[j]
+        current_takeoff_angle_file_label = station_takeoff_angles_variation_data_file.split("/")[-1].split(".")[0] # Get label for plotting from filename
+        color_to_plot_current_toa_data = color_list_for_plotting[j]
+        # And add associated legend patch:
+        legend_patches.append(mpatches.Patch(color=color_list_for_plotting[j], label=current_takeoff_angle_file_label))
+        
+        print "Plotting takeoff angle variation for "+station_takeoff_angles_variation_data_file
+        
+        # Plot station scatter point positions for each station within takeoff angle file:
+        takeoff_angles_data_array = np.loadtxt(station_takeoff_angles_variation_data_file, dtype=str)
+        stations = takeoff_angles_data_array[:,0]
+        phases = takeoff_angles_data_array[:,1]
+        polarities = takeoff_angles_data_array[:,2]
+        ray_takeoff_azimuth_deg_CW_from_N_angles = np.array(takeoff_angles_data_array[:,3], dtype=float)
+        ray_takeoff_dip_deg_up_from_vert_down_angles = np.array(takeoff_angles_data_array[:,4], dtype=float)    
+        # Loop over stations:
+        for i in range(len(stations)):
+            # And process if phase is P arrival:
+            if phases[i] == "P":
+                # Get params for station:
+                azi=(ray_takeoff_azimuth_deg_CW_from_N_angles[i]/360.)*2.*np.pi + np.pi
+                toa=(ray_takeoff_dip_deg_up_from_vert_down_angles[i]/360.)*2.*np.pi
+                station_name = stations[i]
+                if polarities[i] == "U" or polarities[i] == "u":
+                    polarity = 1
+                elif polarities[i] == "D" or polarities[i] == "d":
+                    polarity = -1
+                else:
+                    polarity = 0
+                # And get 3D coordinates for station (and find on 2D projection):
+                theta = np.pi - toa # as +ve Z = down
+                phi = azi
+                if theta>np.pi/2.:
+                    theta = theta - np.pi
+                    phi=phi+np.pi
+                r = 1.0 # as on surface of focal sphere
+                x,y,z = convert_spherical_coords_to_cartesian_coords(r, theta, phi)
+                X, Y = Lambert_azimuthal_equal_area_projection_conv_XY_plane_for_MTs(x,y,z)
+                # And plot based on polarity:
+                if polarity == 1:
+                    ax.scatter(Y,X,facecolor="r", edgecolor=color_to_plot_current_toa_data,marker="^",s=30,alpha=1.0, zorder=100)
+                elif polarity == -1:
+                    ax.scatter(Y,X,facecolor="b", edgecolor=color_to_plot_current_toa_data,marker="v",s=30,alpha=1.0, zorder=100)
+                elif polarity == 0:
+                    ax.scatter(Y,X,facecolor="w", edgecolor=color_to_plot_current_toa_data,marker='o',s=30,alpha=1.0, zorder=100)
+                if plot_station_labels:
+                    # And plot station name:
+                    plt.text(Y,X,station_name,color="k", fontsize=10, horizontalalignment="left", verticalalignment='top',alpha=1.0, zorder=100)
+    
+    # Finish plotting:
+    ax.set_xlabel("E")
+    ax.set_ylabel("N")
+    ax.set_xlim(-2.0,2.0)
+    ax.set_ylim(-2.0,2.0)
+    #plt.plot([-2.,2.],[0.,0.],c="k", alpha=0.5)
+    #plt.plot([0.,0.],[-2.,2.],c="k", alpha=0.5)
+    plt.axis('off')
+    ax2 = fig.add_subplot(122)
+    plt.legend(handles=legend_patches, loc="center")
+    plt.axis('off')
+    # And save figure if given figure filename:
+    if not len(figure_filename) == 0:
+        plt.savefig(figure_filename, dpi=600)
+    else:
+        plt.show()
+        
+
+def plot_prob_dist_percentage_DC(MTs, MTp, figure_filename=[]):
+    """Function to plot the probability distribution associated with a solution being DC. Inputs are set of MT solutions in shape (6,n) and probability array of shape (n).
+    Output is a plot of probability distribution associated with %DC. Method for obtaining this is as in Dahm 1998."""
+    
+    # Setup arrays to store data:
+    percentage_DC_all_solns_bins = np.arange(0.,101.,1.)
+    probability_percentage_DC_all_solns_bins = np.zeros(len(percentage_DC_all_solns_bins), dtype=float)
+    
+    # Loop over all MTs:
+    for i in range(len(MTs[0,:])):
+        # Get full MT:
+        MT_current = MTs[:,i]
+        # And get full MT matrix:
+        full_MT_current = get_full_MT_array(MT_current)
+
+        # Find the eigenvalues for the MT solution and sort into descending order:
+        w,v = eigh(full_MT_current) # Find eigenvalues and associated eigenvectors for the symetric (Hermitian) MT matrix (for eigenvalue w[i], eigenvector is v[:,i])
+        full_MT_eigvals_sorted = np.sort(np.abs(w))[::-1] # Sort eigenvalues into descending order (note absolute of eigenvalues, as in Moment tensor solution notes (GFZ Potsdam) 2002)
+        e1 = full_MT_eigvals_sorted[0]
+        e2 = full_MT_eigvals_sorted[1]
+        e3 = full_MT_eigvals_sorted[2]
+        tr = (e1+e2+e3)/3. # (See Dahm 1998)
+        
+        # And calculate % DC (See Dahm 1998 or Dziewonski 1981):
+        curr_percent_DC = (1. - 2*(np.abs(e3)/np.abs(e1)))*100. #(1. - 2*(np.abs(e3-tr)/np.abs(e1-tr)))*100.
+        # Note: Currently, some of these values are negative!! - Why?!
+        
+        # And bin into correct array bin store:
+        val, val_idx = find_nearest(percentage_DC_all_solns_bins,curr_percent_DC)
+        probability_percentage_DC_all_solns_bins[val_idx] += MTp[i] # Append probability of % DC to bin
+        
+    # And plot results:
+    plt.figure(figsize=(8,6))
+    plt.plot(percentage_DC_all_solns_bins[2:], probability_percentage_DC_all_solns_bins[2:], c='k')
+    plt.xlabel("Percentage DC")
+    plt.ylabel("Probability")
+    # And save figure if given figure filename:
+    if not len(figure_filename) == 0:
+        plt.savefig(figure_filename, dpi=600)
+    else:
+        plt.show()
+    
 
 # ------------------- Main script for running -------------------
 if __name__ == "__main__":
@@ -659,27 +824,39 @@ if __name__ == "__main__":
         # Import MT data:
         #MT_data_filename = "MT_data/20140629184210363MT.mat"
         uid, MTp, MTs, stations = load_MT_dict_from_file(MT_data_filename)
-
-        # Find and plot sample of MTs data on Lune and return MT data from fitted gaussian:
-        figure_filename = "Plots_out/"+MT_data_filename.split("/")[1].split(".")[0]+"_Lune.png"
-        MTs_max_gau_loc = plot_sampled_MT_solns_on_Lune_with_gaussian_fit(MTs, MTp, frac_to_sample=0.1, figure_filename=figure_filename) #frac_to_sample=0.1
-
-        # Get most likely solution:
-        index_MT_max_prob = np.argmax(MTp) # Index of most likely MT solution
-        MT_max_prob = MTs[:,index_MT_max_prob]
-        # And get full MT matrix:
-        full_MT_max_prob = get_full_MT_array(MT_max_prob)
-        print "Full MT (max prob.):"
-        print full_MT_max_prob
-        print "(For plotting radiation pattern)"
-
-        # Plot MT solutions and radiation pattern of most likely on sphere:
-        #MTs_to_plot = np.reshape(MT_max_prob, (6,1))
-        MTs_to_plot = MTs_max_gau_loc#[:,0:15]
-        radiation_pattern_MT = MT_max_prob # 6 moment tensor to plot radiation pattern for
-        figure_filename = "Plots_out/"+MT_data_filename.split("/")[1].split(".")[0]+".png"
-        plot_MTs_on_sphere_twoD(MTs_to_plot, radiation_pattern_MT=radiation_pattern_MT, stations=stations, radiation_MT_phase = "P", lower_upper_hemi_switch="lower", figure_filename=figure_filename, num_MT_solutions_to_plot=20)
-
+        #
+        # # Find and plot sample of MTs data on Lune and return MT data from fitted gaussian:
+        # figure_filename = "Plots_out/"+MT_data_filename.split("/")[1].split(".")[0]+"_Lune.png"
+        # MTs_max_gau_loc = plot_sampled_MT_solns_on_Lune_with_gaussian_fit(MTs, MTp, frac_to_sample=0.1, figure_filename=figure_filename) #frac_to_sample=0.1
+        #
+        # # Get most likely solution:
+        # index_MT_max_prob = np.argmax(MTp) # Index of most likely MT solution
+        # MT_max_prob = MTs[:,index_MT_max_prob]
+        # # And get full MT matrix:
+        # full_MT_max_prob = get_full_MT_array(MT_max_prob)
+        # print "Full MT (max prob.):"
+        # print full_MT_max_prob
+        # print "(For plotting radiation pattern)"
+        #
+        # # Plot MT solutions and radiation pattern of most likely on sphere:
+        # #MTs_to_plot = np.reshape(MT_max_prob, (6,1))
+        # MTs_to_plot = MTs_max_gau_loc#[:,0:15]
+        # radiation_pattern_MT = MT_max_prob # 6 moment tensor to plot radiation pattern for
+        # figure_filename = "Plots_out/"+MT_data_filename.split("/")[1].split(".")[0]+".png"
+        # plot_MTs_on_sphere_twoD(MTs_to_plot, radiation_pattern_MT=radiation_pattern_MT, stations=stations, radiation_MT_phase = "P", lower_upper_hemi_switch="lower", figure_filename=figure_filename, num_MT_solutions_to_plot=20)
+        #
+        # # And plot takeoff angle variation:
+        # # Define color list for plotting:
+        # color_list_for_plotting = ["k", "#922FB8", "#B8FA64", "#FF981C", "#51C5CF", "#14831A", "#D4075E"] #, "#CE6955", "#51C5CF", "#7313C4", "#DF44B2", "#6FBF2F"]
+        # station_takeoff_angles_variation_data_files_list = ["takeoff_angle_files/0m_firn.txt", "takeoff_angle_files/50m_firn.txt", "takeoff_angle_files/50m_firn_bulk_ice_lower_30mps_uncert.txt", "takeoff_angle_files/50m_firn_bulk_ice_upper_30mps_uncert.txt", "takeoff_angle_files/50m_firn_50pc_thinner.txt", "takeoff_angle_files/50m_firn_50pc_thicker.txt", "takeoff_angle_files/50m_firn_NO_WATER_CONTENT.txt"]
+        # figure_filename = "Plots_out/"+MT_data_filename.split("/")[1].split(".")[0]+"_takeoff_angle_variation.png"
+        # plot_takeoff_angles_MT_solution_from_file(station_takeoff_angles_variation_data_files_list, color_list_for_plotting, MT_for_nodal_planes=MT_max_prob, radiation_pattern_MT=[], lower_upper_hemi_switch="lower", figure_filename=figure_filename, plot_station_labels=False)
+        #
+        # And plot %DC probability distribution:
+        figure_filename = "Plots_out/"+MT_data_filename.split("/")[1].split(".")[0]+"_percent_DC_prob_dist.png"
+        MTs_sample, MTp_sample = get_frac_of_MTs_using_MT_probs(MTs, MTp, 1.0)
+        plot_prob_dist_percentage_DC(MTs_sample, MTp_sample, figure_filename)
+        
         print "Finished processing data for:", MT_data_filename
     
     print "Finished"
